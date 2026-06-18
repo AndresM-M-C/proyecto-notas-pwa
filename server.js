@@ -6,17 +6,17 @@ const nodemailer = require('nodemailer');
 
 const app = express();
 
-// Middlewares obligatorios para leer JSON y formularios
+// Middlewares obligatorios para procesar JSON y datos de formularios
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Servir los archivos estáticos de tu interfaz de usuario
+// Servir los archivos estáticos de tu interfaz de usuario (Frontend)
 app.use(express.static(path.join(__dirname, 'Proyecto notas')));
 
 let pool;
 let emailTransporter;
 
-// Función para inicializar las conexiones de forma segura
+// Función para inicializar las conexiones de forma segura al arrancar
 async function initServer() {
     try {
         // 1. Configuración del Pool de conexiones a la Base de Datos (Clever Cloud)
@@ -34,6 +34,19 @@ async function initServer() {
         // Probar la conexión inicial de la BD
         const connection = await pool.getConnection();
         console.log('Conexión con Clever Cloud establecida exitosamente.');
+        
+        // AUTOMÁTICO: Crear la tabla usuarios si no existe en Clever Cloud
+        await connection.query(`
+            CREATE TABLE IF NOT EXISTS usuarios (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                password VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        console.log('Tabla "usuarios" verificada o creada exitosamente en la nube.');
+
+        // Liberar la conexión de prueba al pool
         connection.release();
 
         // 2. Configuración del servicio de correos (Nodemailer con Gmail)
@@ -41,7 +54,7 @@ async function initServer() {
             service: 'gmail',
             auth: {
                 user: process.env.EMAIL_USER,
-                pass: process.env.EMAIL_PASS // Contraseña de aplicación de 16 dígitos
+                pass: process.env.EMAIL_PASS // Tu contraseña de aplicación de 16 dígitos
             }
         });
 
@@ -52,9 +65,7 @@ async function initServer() {
         console.log('Servidor y base de datos inicializados con éxito.');
 
     } catch (error) {
-        console.error('Error crítico al inicializar el servidor:', error.message);
-        // No detenemos el proceso para que Render no marque el despliegue como fallido,
-        // pero registramos el fallo en la consola para saber qué falló en el arranque.
+        console.error('Error crítico al inicializar el servidor o crear tablas:', error.message);
     }
 }
 
@@ -78,7 +89,6 @@ app.post('/api/register', async (req, res) => {
         console.log(`Intentando registrar al usuario: ${email}`);
 
         // 1. Intentar insertar el usuario en la Base de Datos remota
-        // NOTA: Reemplaza 'usuarios' si el nombre exacto de tu tabla en Clever Cloud es diferente
         const [result] = await pool.query(
             'INSERT INTO usuarios (email, password) VALUES (?, ?)', 
             [email, password]
@@ -121,7 +131,7 @@ app.post('/api/register', async (req, res) => {
     } catch (dbError) {
         console.error('Fallo controlado en la Base de Datos:', dbError.message);
 
-        // Si la tabla no existe o las columnas difieren, Clever Cloud responderá un mensaje claro en texto
+        // Si el correo ya existe o hay problemas de estructura, Clever Cloud responderá un mensaje claro en texto
         return res.status(500).json({ 
             error: `Fallo en la Base de Datos de Clever Cloud: ${dbError.message}` 
         });
@@ -137,5 +147,5 @@ app.get('*', (req, res) => {
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, async () => {
     console.log(`Servidor corriendo en el puerto ${PORT}`);
-    await initServer(); // Iniciar bases de datos y correos una vez levantado el puerto
+    await initServer(); // Iniciar bases de datos y tablas una vez levantado el puerto
 });
