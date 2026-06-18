@@ -45,29 +45,29 @@ async function initServer() {
             );
         `);
         console.log('Tabla "usuarios" verificada o creada exitosamente en la nube.');
-
-        // Liberar la conexión de prueba al pool
         connection.release();
 
-        // 2. CONFIGURACIÓN OPTIMIZADA: Puerto seguro 465 para evitar Connection Timeout en la nube
+        // 2. Configuración del servicio de correos (Nodemailer con Gmail)
         emailTransporter = nodemailer.createTransport({
             host: 'smtp.gmail.com',
             port: 465,
-            secure: true, // true para usar SSL en el puerto 465
+            secure: true, // Usa SSL para el puerto 465
             auth: {
                 user: process.env.EMAIL_USER,
                 pass: process.env.EMAIL_PASS // Tu contraseña de aplicación de 16 dígitos
             },
             tls: {
-                rejectUnauthorized: false // Evita bloqueos por certificados en ciertos entornos
+                rejectUnauthorized: false // Evita bloqueos por certificados en entornos de nube
             }
         });
 
-        // Verificar que Gmail acepte las credenciales al arrancar
-        await emailTransporter.verify();
-        console.log('Servidor de correos (Nodemailer) listo.');
-
-        console.log('Servidor y base de datos inicializados con éxito.');
+        // Intentar verificar la conexión con Gmail sin detener el servidor si falla
+        try {
+            await emailTransporter.verify();
+            console.log('Servidor de correos (Nodemailer) listo.');
+        } catch (e) {
+            console.log('Aviso: Gmail no se validó en el arranque, se usará el respaldo en segundo plano.');
+        }
 
     } catch (error) {
         console.error('Error crítico al inicializar el servidor o crear tablas:', error.message);
@@ -75,7 +75,7 @@ async function initServer() {
 }
 
 // ==========================================
-// RUTA CRÍTICA: REGISTRO DE USUARIOS
+// RUTA CRÍTICA: REGISTRO DE USUARIOS (ASÍNCRONO)
 // ==========================================
 app.post('/api/register', async (req, res) => {
     const { email, password } = req.body;
@@ -86,27 +86,29 @@ app.post('/api/register', async (req, res) => {
     }
 
     try {
-        // Asegurar que el Pool esté listo antes de consultar
         if (!pool) {
             throw new Error('La base de datos no está inicializada. Verifica las variables de entorno.');
         }
 
         console.log(`Intentando registrar al usuario: ${email}`);
 
-        // 1. Intentar insertar el usuario en la Base de Datos remota
+        // 1. Guardar de inmediato al usuario en la Base de Datos de Clever Cloud
         const [result] = await pool.query(
             'INSERT INTO usuarios (email, password) VALUES (?, ?)', 
             [email, password]
         );
-
         console.log(`Usuario ${email} guardado correctamente en la BD.`);
 
-        // 2. Intentar enviar el correo de verificación de manera aislada
-        try {
-            if (!emailTransporter) {
-                throw new Error('El transportador de correo electrónico no está configurado.');
-            }
+        // 2. RESPUESTA INMEDIATA AL FRONTEND
+        // Al enviar esto aquí, el botón "Enviando correo..." de tu web cambiará a éxito de inmediato
+        res.status(200).json({ 
+            success: true, 
+            message: 'Usuario registrado con éxito.' 
+        });
 
+        // 3. SEGUNDO PLANO: El correo se procesa de forma independiente
+        // Si el correo se retrasa o se cae, no afectará la experiencia del usuario en la pantalla
+        if (emailTransporter) {
             const mailOptions = {
                 from: process.env.EMAIL_USER,
                 to: email,
@@ -114,29 +116,14 @@ app.post('/api/register', async (req, res) => {
                 text: '¡Gracias por registrarte en nuestra aplicación de notas PWA! Tu cuenta se ha creado con éxito.'
             };
 
-            await emailTransporter.sendMail(mailOptions);
-            console.log(`Correo de verificación enviado con éxito a: ${email}`);
-
-            // Si todo sale perfecto
-            return res.status(200).json({ 
-                success: true, 
-                message: 'Usuario registrado con éxito y correo de verificación enviado.' 
-            });
-
-        } catch (mailError) {
-            console.error('Fallo controlado en Nodemailer:', mailError.message);
-            
-            // ATENCIÓN: El usuario SÍ se guardó en la BD, pero el correo falló.
-            // Le avisamos al frontend el error exacto de Gmail sin romper el flujo.
-            return res.status(500).json({ 
-                error: `Usuario creado en la base de datos, pero falló el envío del correo: ${mailError.message}` 
-            });
+            emailTransporter.sendMail(mailOptions)
+                .then(() => console.log(`[Segundo Plano] Correo de verificación enviado a: ${email}`))
+                .catch((err) => console.log(`[Segundo Plano] Envío de correo omitido/fallido: ${err.message}`));
         }
 
     } catch (dbError) {
         console.error('Fallo controlado en la Base de Datos:', dbError.message);
-
-        // Si el correo ya existe o hay problemas de estructura, Clever Cloud responderá un mensaje claro en texto
+        // Si el usuario ya existe, Clever Cloud frena el proceso y le avisamos al frontend
         return res.status(500).json({ 
             error: `Fallo en la Base de Datos de Clever Cloud: ${dbError.message}` 
         });
@@ -148,9 +135,9 @@ app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'Proyecto notas', 'index.html'));
 });
 
-// Escuchar en el puerto dinámico de Render o el 10000 por defecto
-const PORT = process.env.PORT || 10000;
+// Escuchar en el puerto dinámico que asigne Railway (usa el 8080 o el process.env.PORT)
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, async () => {
     console.log(`Servidor corriendo en el puerto ${PORT}`);
-    await initServer(); // Iniciar bases de datos y tablas una vez levantado el puerto
+    await initServer(); // Inicializar base de datos y tablas al levantar el puerto
 });
