@@ -57,7 +57,7 @@ async function initServer() {
                 pass: process.env.EMAIL_PASS // Tu contraseña de aplicación de 16 dígitos
             },
             tls: {
-                rejectUnauthorized: false // Evita bloqueos por certificados en entornos de nube
+                rejectUnauthorized: false
             }
         });
 
@@ -66,7 +66,7 @@ async function initServer() {
             await emailTransporter.verify();
             console.log('Servidor de correos (Nodemailer) listo.');
         } catch (e) {
-            console.log('Aviso: Gmail no se validó en el arranque, se usará el respaldo en segundo plano.');
+            console.log('Aviso: Gmail no se validó en el arranque, usando respaldo.');
         }
 
     } catch (error) {
@@ -75,58 +75,130 @@ async function initServer() {
 }
 
 // ==========================================
-// RUTA CRÍTICA: REGISTRO DE USUARIOS (ASÍNCRONO)
+// 1. RUTA: REGISTRO DE USUARIOS (ASÍNCRONO)
 // ==========================================
 app.post('/api/register', async (req, res) => {
     const { email, password } = req.body;
 
-    // Validación básica en el backend
     if (!email || !password) {
         return res.status(400).json({ error: 'Todos los campos son obligatorios.' });
     }
 
     try {
-        if (!pool) {
-            throw new Error('La base de datos no está inicializada. Verifica las variables de entorno.');
-        }
+        if (!pool) throw new Error('La base de datos no está inicializada.');
 
         console.log(`Intentando registrar al usuario: ${email}`);
 
-        // 1. Guardar de inmediato al usuario en la Base de Datos de Clever Cloud
+        // Guardar en la Base de Datos
         const [result] = await pool.query(
             'INSERT INTO usuarios (email, password) VALUES (?, ?)', 
             [email, password]
         );
-        console.log(`Usuario ${email} guardado correctamente en la BD.`);
+        console.log(`Usuario ${email} guardado correctamente.`);
 
-        // 2. RESPUESTA INMEDIATA AL FRONTEND
-        // Al enviar esto aquí, el botón "Enviando correo..." de tu web cambiará a éxito de inmediato
-        res.status(200).json({ 
-            success: true, 
-            message: 'Usuario registrado con éxito.' 
-        });
+        // RESPUESTA INMEDIATA AL FRONTEND
+        res.status(200).json({ success: true, message: 'Usuario registrado con éxito.' });
 
-        // 3. SEGUNDO PLANO: El correo se procesa de forma independiente
-        // Si el correo se retrasa o se cae, no afectará la experiencia del usuario en la pantalla
+        // SEGUNDO PLANO: Envío del correo de verificación
         if (emailTransporter) {
             const mailOptions = {
-                from: process.env.EMAIL_USER,
+                from: `"Proyecto Notas" <${process.env.EMAIL_USER}>`,
                 to: email,
                 subject: 'Verificación de Cuenta - Proyecto Notas',
                 text: '¡Gracias por registrarte en nuestra aplicación de notas PWA! Tu cuenta se ha creado con éxito.'
             };
 
             emailTransporter.sendMail(mailOptions)
-                .then(() => console.log(`[Segundo Plano] Correo de verificación enviado a: ${email}`))
-                .catch((err) => console.log(`[Segundo Plano] Envío de correo omitido/fallido: ${err.message}`));
+                .then(() => console.log(`[Correo] Verificación enviada a: ${email}`))
+                .catch((err) => console.log(`[Correo] Error al enviar verificación: ${err.message}`));
         }
 
     } catch (dbError) {
-        console.error('Fallo controlado en la Base de Datos:', dbError.message);
-        // Si el usuario ya existe, Clever Cloud frena el proceso y le avisamos al frontend
-        return res.status(500).json({ 
-            error: `Fallo en la Base de Datos de Clever Cloud: ${dbError.message}` 
+        console.error('Fallo en la BD:', dbError.message);
+        return res.status(500).json({ error: `Fallo en la Base de Datos: ${dbError.message}` });
+    }
+});
+
+// ==========================================
+// 2. NUEVA RUTA: INICIO DE SESIÓN (LOGIN)
+// ==========================================
+app.post('/api/login', async (req, res) => {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+        return res.status(400).json({ error: 'Todos los campos son obligatorios.' });
+    }
+
+    try {
+        if (!pool) throw new Error('La base de datos no está inicializada.');
+
+        // Buscar al usuario en la tabla correcta "usuarios"
+        const [rows] = await pool.query('SELECT * FROM usuarios WHERE email = ?', [email]);
+
+        if (rows.length === 0) {
+            return res.status(401).json({ error: 'El correo electrónico no está registrado.' });
+        }
+
+        const user = rows[0];
+
+        // Validación de contraseña (texto plano temporal para tu desarrollo)
+        if (user.password !== password) {
+            return res.status(401).json({ error: 'La contraseña es incorrecta.' });
+        }
+
+        console.log(`Usuario inició sesión con éxito: ${email}`);
+        return res.status(200).json({ 
+            success: true, 
+            message: 'Inicio de sesión exitoso.',
+            user: { id: user.id, email: user.email }
         });
+
+    } catch (error) {
+        console.error('Error en el login:', error.message);
+        return res.status(500).json({ error: 'Error interno del servidor al iniciar sesión.' });
+    }
+});
+
+// ==========================================
+// 3. NUEVA RUTA: RECUPERAR CONTRASEÑA
+// ==========================================
+app.post('/api/recover', async (req, res) => {
+    const { email } = req.body;
+
+    if (!email) {
+        return res.status(400).json({ error: 'El correo es obligatorio.' });
+    }
+
+    try {
+        if (!pool) throw new Error('La base de datos no está inicializada.');
+
+        // Verificar si el correo existe
+        const [rows] = await pool.query('SELECT * FROM usuarios WHERE email = ?', [email]);
+
+        if (rows.length === 0) {
+            return res.status(404).json({ error: 'No existe ninguna cuenta con ese correo.' });
+        }
+
+        // RESPUESTA INMEDIATA
+        res.status(200).json({ success: true, message: 'Si el correo existe, se enviará un enlace.' });
+
+        // SEGUNDO PLANO: Enviar correo con la contraseña (o token)
+        if (emailTransporter) {
+            const mailOptions = {
+                from: `"Proyecto Notas" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: 'Recuperación de Contraseña - Proyecto Notas',
+                text: `Hola. Has solicitado recuperar tu contraseña. Tu contraseña actual es: ${rows[0].password}`
+            };
+
+            emailTransporter.sendMail(mailOptions)
+                .then(() => console.log(`[Correo] Recuperación enviada a: ${email}`))
+                .catch((err) => console.log(`[Correo] Error al enviar recuperación: ${err.message}`));
+        }
+
+    } catch (error) {
+        console.error('Error en la recuperación:', error.message);
+        return res.status(500).json({ error: 'Error al procesar la solicitud de recuperación.' });
     }
 });
 
@@ -135,9 +207,9 @@ app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'Proyecto notas', 'index.html'));
 });
 
-// Escuchar en el puerto dinámico que asigne Railway (usa el 8080 o el process.env.PORT)
+// Escuchar en el puerto dinámico de Railway
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, async () => {
     console.log(`Servidor corriendo en el puerto ${PORT}`);
-    await initServer(); // Inicializar base de datos y tablas al levantar el puerto
+    await initServer();
 });
