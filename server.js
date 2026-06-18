@@ -49,12 +49,17 @@ async function initServer() {
         // Liberar la conexión de prueba al pool
         connection.release();
 
-        // 2. Configuración del servicio de correos (Nodemailer con Gmail)
+        // 2. CONFIGURACIÓN OPTIMIZADA: Puerto seguro 465 para evitar Connection Timeout en la nube
         emailTransporter = nodemailer.createTransport({
-            service: 'gmail',
+            host: 'smtp.gmail.com',
+            port: 465,
+            secure: true, // true para usar SSL en el puerto 465
             auth: {
                 user: process.env.EMAIL_USER,
                 pass: process.env.EMAIL_PASS // Tu contraseña de aplicación de 16 dígitos
+            },
+            tls: {
+                rejectUnauthorized: false // Evita bloqueos por certificados en ciertos entornos
             }
         });
 
