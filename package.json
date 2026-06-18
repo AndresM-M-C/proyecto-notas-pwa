@@ -1,0 +1,14 @@
+{
+  "name": "proyecto-notas-pwa",
+  "version": "1.0.0",
+  "description": "PWA de Notas con CRUD y Autenticación Completa",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.22.2",
+    "mysql2": "^3.22.5",
+    "nodemailer": "^6.10.1"
+  }
+}

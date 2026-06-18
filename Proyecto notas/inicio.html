@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/font/bootstrap-icons.min.css">
+    <link rel="stylesheet" href="css/inicio.css">
+    <title>Notas</title>
+</head>
+<body>
+    <header>
+        <h1>Notas</h1>
+        <form onsubmit="event.preventDefault();">
+            <input type="text" placeholder="Buscar">
+            <div>
+                <i class="bi bi-search"></i>
+            </div>
+        </form>
+        <button id="btn-salir"> 
+            <i class="bi bi-box-arrow-right"></i>
+        </button>
+    </header>
+
+    <main>
+        <a href="agregar.html" class="btn-add"> +</a>
+        <ul id="listaNotas">
+            </ul>
+    </main>
+    <script src="js/salir.js"></script>
+    <script src="js/mostrar.js"></script>
+</body>
+</html>
