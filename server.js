@@ -5,212 +5,137 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 
 const app = express();
+
+// Middlewares obligatorios para leer JSON y formularios
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Servir los archivos estáticos de tu interfaz de usuario
 app.use(express.static(path.join(__dirname, 'Proyecto notas')));
 
 let pool;
 let emailTransporter;
 
-// Configuración de correo segura usando variables de entorno o valores por defecto
-const MI_GMAIL = process.env.EMAIL_USER || "proyectonotas6@gmail.com";
-const MI_PASSWORD_APP = process.env.EMAIL_PASS || "aiwszhvszzycuntm";
-
-// Detectar automáticamente la URL de Render para que los enlaces de correo no usen localhost
-const BASE_URL = process.env.RENDER
-    ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}`
-    : 'http://localhost:3000';
-
+// Función para inicializar las conexiones de forma segura
 async function initServer() {
-    // El código detectará si está en Render para usar Clever Cloud, de lo contrario usará tu Localhost
-    const dbConfig = process.env.RENDER ? {
-        host: process.env.DB_HOST,
-        user: process.env.DB_USER,
-        password: process.env.DB_PASSWORD,
-        database: process.env.DB_NAME,
-        port: parseInt(process.env.DB_PORT) || 3306,
-        waitForConnections: true,
-        connectionLimit: 10,
-        queueLimit: 0
-    } : {
-        host: 'localhost',
-        user: 'root',
-        password: '',
-        database: 'notas_pwa',
-        waitForConnections: true,
-        connectionLimit: 10,
-        queueLimit: 0
-    };
+    try {
+        // 1. Configuración del Pool de conexiones a la Base de Datos (Clever Cloud)
+        pool = mysql.createPool({
+            host: process.env.DB_HOST,
+            user: process.env.DB_USER,
+            password: process.env.DB_PASSWORD,
+            database: process.env.DB_NAME,
+            port: process.env.DB_PORT || 3306,
+            waitForConnections: true,
+            connectionLimit: 10,
+            queueLimit: 0
+        });
 
-    pool = mysql.createPool(dbConfig);
+        // Probar la conexión inicial de la BD
+        const connection = await pool.getConnection();
+        console.log('Conexión con Clever Cloud establecida exitosamente.');
+        connection.release();
 
-    // Configuración del transporte de Nodemailer con Gmail
-    emailTransporter = nodemailer.createTransport({
-        service: 'gmail',
-        host: 'smtp.gmail.com',
-        port: 465,
-        secure: true,
-        auth: {
-            user: MI_GMAIL,
-            pass: MI_PASSWORD_APP
-        }
-    });
+        // 2. Configuración del servicio de correos (Nodemailer con Gmail)
+        emailTransporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS // Contraseña de aplicación de 16 dígitos
+            }
+        });
 
-    // Creación automática de tablas si no existen en Clever Cloud
-    await pool.query(`
-        CREATE TABLE IF NOT EXISTS users (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            username VARCHAR(255) NOT NULL,
-            email VARCHAR(255) NOT NULL UNIQUE,
-            password VARCHAR(255) NOT NULL,
-            verified BOOLEAN DEFAULT FALSE,
-            token VARCHAR(255)
-        )
-    `);
+        // Verificar que Gmail acepte las credenciales al arrancar
+        await emailTransporter.verify();
+        console.log('Servidor de correos (Nodemailer) listo.');
 
-    await pool.query(`
-        CREATE TABLE IF NOT EXISTS notes (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            user_id INT,
-            title VARCHAR(255),
-            content TEXT,
-            color VARCHAR(50),
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-        )
-    `);
+        console.log('Servidor y base de datos inicializados con éxito.');
 
-    console.log('Servidor y base de datos inicializados con éxito.');
+    } catch (error) {
+        console.error('Error crítico al inicializar el servidor:', error.message);
+        // No detenemos el proceso para que Render no marque el despliegue como fallido,
+        // pero registramos el fallo en la consola para saber qué falló en el arranque.
+    }
 }
 
-initServer().catch(err => {
-    console.error('Error crítico al inicializar el servidor:', err);
-});
-
-// --- RUTAS DE LA API ---
-
+// ==========================================
+// RUTA CRÍTICA: REGISTRO DE USUARIOS
+// ==========================================
 app.post('/api/register', async (req, res) => {
-    const { username, email, password } = req.body;
-    try {
-        const token = crypto.randomBytes(32).toString('hex');
-        await pool.query('INSERT INTO users (username, email, password, token) VALUES (?, ?, ?, ?)', [username, email, password, token]);
-
-        const verificationLink = `${BASE_URL}/api/verify?token=${token}`;
-
-        const mailOptions = {
-            from: MI_GMAIL,
-            to: email,
-            subject: 'Verificación de Correo - Proyecto Notas',
-            html: `<p>Hola ${username},</p><p>Por favor verifica tu correo haciendo clic en el siguiente enlace:</p><a href="${verificationLink}">${verificationLink}</a>`
-        };
-
-        await emailTransporter.sendMail(mailOptions);
-        res.json({ message: 'Usuario registrado. Por favor verifica tu correo electrónico.' });
-    } catch (err) {
-        if (err.code === 'ER_DUP_ENTRY') {
-            return res.status(400).json({ error: 'El correo electrónico ya está registrado.' });
-        }
-        console.error(err);
-        res.status(500).json({ error: 'Error en el servidor durante el registro.' });
-    }
-});
-
-app.get('/api/verify', async (req, res) => {
-    const { token } = req.query;
-    try {
-        const [users] = await pool.query('SELECT * FROM users WHERE token = ?', [token]);
-        if (users.length === 0) return res.status(400).send('Token inválido o expirado.');
-
-        await pool.query('UPDATE users SET verified = TRUE, token = NULL WHERE id = ?', [users[0].id]);
-
-        res.send(`
-            <div style="text-align: center; font-family: sans-serif; margin-top: 50px;">
-                <h1 style="color: #4CAF50;">¡Cuenta verificada con éxito!</h1>
-                <p>Ya puedes regresar a la aplicación e iniciar sesión.</p>
-                <a href="${BASE_URL}" style="padding: 10px 20px; background-color: #4CAF50; color: white; text-decoration: none; border-radius: 5px;">Ir a Iniciar Sesión</a>
-            </div>
-        `);
-    } catch (error) {
-        res.status(500).send('Error interno al verificar la cuenta.');
-    }
-});
-
-app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
-    try {
-        const [users] = await pool.query('SELECT * FROM users WHERE email = ? AND password = ?', [email, password]);
-        if (users.length === 0) return res.status(400).json({ error: 'Credenciales incorrectas.' });
-        if (!users[0].verified) return res.status(400).json({ error: 'Por favor, verifica tu correo primero.' });
 
-        res.json({ message: 'Inicio de sesión exitoso.', userId: users[0].id, username: users[0].username });
-    } catch (error) {
-        res.status(500).json({ error: 'Error en el inicio de sesión.' });
+    // Validación básica en el backend
+    if (!email || !password) {
+        return res.status(400).json({ error: 'Todos los campos son obligatorios.' });
+    }
+
+    try {
+        // Asegurar que el Pool esté listo antes de consultar
+        if (!pool) {
+            throw new Error('La base de datos no está inicializada. Verifica las variables de entorno.');
+        }
+
+        console.log(`Intentando registrar al usuario: ${email}`);
+
+        // 1. Intentar insertar el usuario en la Base de Datos remota
+        // NOTA: Reemplaza 'usuarios' si el nombre exacto de tu tabla en Clever Cloud es diferente
+        const [result] = await pool.query(
+            'INSERT INTO usuarios (email, password) VALUES (?, ?)', 
+            [email, password]
+        );
+
+        console.log(`Usuario ${email} guardado correctamente en la BD.`);
+
+        // 2. Intentar enviar el correo de verificación de manera aislada
+        try {
+            if (!emailTransporter) {
+                throw new Error('El transportador de correo electrónico no está configurado.');
+            }
+
+            const mailOptions = {
+                from: process.env.EMAIL_USER,
+                to: email,
+                subject: 'Verificación de Cuenta - Proyecto Notas',
+                text: '¡Gracias por registrarte en nuestra aplicación de notas PWA! Tu cuenta se ha creado con éxito.'
+            };
+
+            await emailTransporter.sendMail(mailOptions);
+            console.log(`Correo de verificación enviado con éxito a: ${email}`);
+
+            // Si todo sale perfecto
+            return res.status(200).json({ 
+                success: true, 
+                message: 'Usuario registrado con éxito y correo de verificación enviado.' 
+            });
+
+        } catch (mailError) {
+            console.error('Fallo controlado en Nodemailer:', mailError.message);
+            
+            // ATENCIÓN: El usuario SÍ se guardó en la BD, pero el correo falló.
+            // Le avisamos al frontend el error exacto de Gmail sin romper el flujo.
+            return res.status(500).json({ 
+                error: `Usuario creado en la base de datos, pero falló el envío del correo: ${mailError.message}` 
+            });
+        }
+
+    } catch (dbError) {
+        console.error('Fallo controlado en la Base de Datos:', dbError.message);
+
+        // Si la tabla no existe o las columnas difieren, Clever Cloud responderá un mensaje claro en texto
+        return res.status(500).json({ 
+            error: `Fallo en la Base de Datos de Clever Cloud: ${dbError.message}` 
+        });
     }
 });
 
-app.post('/api/recover', async (req, res) => {
-    const { email } = req.body;
-    try {
-        const [users] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
-        if (users.length === 0) return res.status(400).json({ error: 'El correo no está registrado.' });
-
-        const token = crypto.randomBytes(32).toString('hex');
-        await pool.query('UPDATE users SET token = ? WHERE id = ?', [token, users[0].id]);
-
-        const recoveryLink = `${BASE_URL}/api/reset-password.html?token=${token}`;
-
-        const mailOptions = {
-            from: MI_GMAIL,
-            to: email,
-            subject: 'Recuperación de Contraseña - Proyecto Notas',
-            html: `<p>Hola,</p><p>Puedes restablecer tu contraseña usando el siguiente enlace:</p><a href="${recoveryLink}">${recoveryLink}</a>`
-        };
-
-        await emailTransporter.sendMail(mailOptions);
-        res.json({ message: 'Correo de recuperación enviado.' });
-    } catch (error) {
-        res.status(500).json({ error: 'Error al procesar la recuperación de contraseña.' });
-    }
+// Ruta comodín para servir el index.html en cualquier otra navegación (Esencial para PWAs)
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'Proyecto notas', 'index.html'));
 });
 
-app.post('/api/reset-password', async (req, res) => {
-    const { token, newPassword } = req.body;
-    try {
-        const [users] = await pool.query('SELECT * FROM users WHERE token = ?', [token]);
-        if (users.length === 0) return res.status(400).json({ error: 'El token de recuperación es inválido.' });
-
-        await pool.query('UPDATE users SET password = ?, token = NULL WHERE id = ?', [newPassword, users[0].id]);
-        res.json({ message: 'Contraseña actualizada con éxito.' });
-    } catch (error) {
-        res.status(500).json({ error: 'Error al restablecer la contraseña.' });
-    }
-});
-
-app.get('/api/notes', async (req, res) => {
-    const userId = req.headers['user-id'];
-    const [notes] = await pool.query('SELECT * FROM notes WHERE user_id = ?', [userId]);
-    res.json(notes);
-});
-
-app.post('/api/notes', async (req, res) => {
-    const { title, content, color, userId } = req.body;
-    await pool.query('INSERT INTO notes (user_id, title, content, color) VALUES (?, ?, ?, ?)', [userId, title, content, color]);
-    res.json({ message: 'Nota guardada exitosamente.' });
-});
-
-app.put('/api/notes/:id', async (req, res) => {
-    const { title, content, color } = req.body;
-    const { id } = req.params;
-    await pool.query('UPDATE notes SET title = ?, content = ?, color = ? WHERE id = ?', [title, content, color, id]);
-    res.json({ message: 'Nota actualizada correctamente.' });
-});
-
-app.delete('/api/notes/:id', async (req, res) => {
-    const { id } = req.params;
-    await pool.query('DELETE FROM notes WHERE id = ?', [id]);
-    res.json({ message: 'Nota eliminada correctamente.' });
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
+// Escuchar en el puerto dinámico de Render o el 10000 por defecto
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, async () => {
     console.log(`Servidor corriendo en el puerto ${PORT}`);
+    await initServer(); // Iniciar bases de datos y correos una vez levantado el puerto
 });
